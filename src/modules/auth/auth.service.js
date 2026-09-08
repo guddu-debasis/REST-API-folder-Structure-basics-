@@ -1,3 +1,4 @@
+import { sendVerificationEmail } from "../../common/config/email.js";
 import ApiError from "../../common/utils/api-error.js";
 import {
   generateAccessToken,
@@ -6,8 +7,6 @@ import {
   verifyRefreshToken,
 } from "../../common/utils/jwt.utils.js";
 import User from "./auth.model.js";
-import sendEmail from "../../common/utils/email.utils.js";
-import crypto from "crypto";
 
 const hashToken = (token) =>
   crypto.createHash("sha256").update(token).digest("hex");
@@ -27,6 +26,11 @@ const register = async ({ name, email, password, role }) => {
   });
 
   // TODO: send an email to user with token: rawToken
+  try {
+    await sendVerificationEmail(email, token);
+  } catch (error) {
+    console.error(error);
+  }
 
   const userObj = user.toObject();
   delete userObj.password;
@@ -40,10 +44,12 @@ const login = async ({ email, password }) => {
   // then check if password is correct
   // check if verified or not
 
-  const user = await User.findOne({ email }).select("+password"); //remember how to check email and password here thi is mongoose syntax
+  const user = await User.findOne({ email }).select("+password");
   if (!user) throw ApiError.unauthorized("Invalid Email or password");
 
   // somehow I will check password
+  const isMatch = await user.comparePassword(password);
+  if (!isMatch) throw ApiError.unauthorized("Invalid email or password");
 
   if (!user.isVerified) {
     throw ApiError.forbidden("Please verify your email before loggin");
@@ -62,7 +68,6 @@ const login = async ({ email, password }) => {
   return { user: userObj, accessToken, refreshToken };
 };
 
-// refresh token function make an anathor refresh token it uses when access token expires and we want to get a new access token using refresh token
 const refresh = async (token) => {
   if (!token) throw ApiError.unauthorized("Refresh token missing");
   const decoded = verifyRefreshToken(token);
@@ -75,12 +80,8 @@ const refresh = async (token) => {
   }
 
   const accessToken = generateAccessToken({ id: user._id, role: user.role });
-  const refreshToken = generateRefreshToken({ id: user._id });
 
-  user.refreshToken = hashToken(refreshToken);
-  await user.save({ validateBeforeSave: false });
-
-  return { accessToken, refreshToken };
+  return { accessToken };
 };
 
 const logout = async (userId) => {
@@ -94,73 +95,35 @@ const logout = async (userId) => {
 };
 
 const forgotPassword = async (email) => {
-
   const user = await User.findOne({ email });
+  if (!user) throw ApiError.notfound("No acccount with that email");
 
-  if (!user) {
-    throw ApiError.notfound("No account with that email");
-  }
-
-
-  // 1. Generate token
   const { rawToken, hashedToken } = generateResetToken();
-
-
-  // 2. Save HASHED token in database
-  user.resetPasswordToken = hashedToken;
-
-
-  // 3. Token expires in 15 minutes
-  user.resetPasswordExpires =
-    new Date(Date.now() + 15 * 60 * 1000);
-
+  user.resetPasswordtoken = hashedToken;
+  user.resetpasswordExpires = Date.now() + 15 * 60 * 1000;
 
   await user.save();
 
-
-  // 4. Create reset link
-  const resetUrl =
-    `${process.env.CLIENT_URL}/reset-password/${rawToken}`;
-
-
-  // 5. Send email
-  await sendEmail({
-    to: user.email,
-
-    subject: "Reset Your Password",
-
-    html: `
-      <h2>Password Reset Request</h2>
-
-      <p>Hello ${user.name || "User"},</p>
-
-      <p>
-        We received a request to reset your password.
-      </p>
-
-      <p>
-        Click the link below to reset your password:
-      </p>
-
-      <a href="${resetUrl}">
-        Reset Password
-      </a>
-
-      <p>
-        This link will expire in <strong>15 minutes</strong>.
-      </p>
-
-      <p>
-        If you did not request a password reset,
-        please ignore this email.
-      </p>
-    `,
-  });
-
-
-  return {
-    message: "Password reset link sent successfully",
-  };
+  //TODO: mail bhejna nhi aata
 };
 
-export { register, login, refresh, logout, forgotPassword };
+const verifyEmail = async (token) => {
+  const hashedToken = hashToken(token);
+  const user = await User.findOne({ verificationToken: hashedToken }).select(
+    "+verificationToken",
+  );
+
+  //if user not found
+  user.isVerified = true;
+  user.verificationToken = undefined;
+  await user.save();
+  return user;
+};
+
+const getMe = async (userId) => {
+  const user = await User.findById(userId);
+  if (!user) throw ApiError.notfound("User not found");
+  return user;
+};
+
+export { register, login, refresh, logout, forgotPassword, getMe, verifyEmail };
